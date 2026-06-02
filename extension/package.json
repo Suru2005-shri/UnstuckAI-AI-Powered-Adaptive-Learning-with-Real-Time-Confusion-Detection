@@ -1,0 +1,48 @@
+{
+  "name": "unstuckai",
+  "displayName": "UnstuckAI",
+  "description": "Real-time coding confusion detection",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "unstuckai.label",
+        "title": "UnstuckAI: I am confused right now"
+      },
+      {
+        "command": "unstuckai.stats",
+        "title": "UnstuckAI: Show collection stats"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "unstuckai.label",
+        "key": "ctrl+shift+c",
+        "mac": "cmd+shift+c",
+        "when": "editorTextFocus"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.130",
+    "@types/vscode": "^1.120.0",
+    "typescript": "^5.9.3"
+  },
+  "enabledApiProposals": [
+    "terminalDataWriteEvent"
+  ]
+}

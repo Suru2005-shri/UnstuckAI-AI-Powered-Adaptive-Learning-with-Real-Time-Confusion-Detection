@@ -1,0 +1,35 @@
+{
+  "model_type": "lstm",
+  "input_shape": [
+    1,
+    10,
+    20
+  ],
+  "output": "logit \u2014 apply sigmoid for confusion probability",
+  "threshold": 0.65,
+  "feature_cols": [
+    "wpm_mean",
+    "wpm_std",
+    "wpm_trend",
+    "delete_ratio_mean",
+    "delete_ratio_max",
+    "idle_mean",
+    "idle_max",
+    "idle_count",
+    "error_count",
+    "error_repeat_flag",
+    "time_on_line_sec",
+    "cursor_moves",
+    "attempt_count",
+    "same_error_count",
+    "run_count",
+    "hint_clicked",
+    "question_asked",
+    "cartoon_activated",
+    "understood_after_help",
+    "confusion_type_id"
+  ],
+  "val_f1": 0.8619173262972735,
+  "val_auc": 0.6356619121269406,
+  "epoch": 2
+}

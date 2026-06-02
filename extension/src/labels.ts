@@ -1,9 +1,24 @@
 /**
  * labels.ts
  * =========
- * Handles Ctrl+Shift+C confusion label shortcut.
- * Shows a quick pick menu to select confusion type from C01-C27.
- * Resets same_error_count when error clears.
+ * Silent confusion labeller — NO popup menu.
+ * When user presses Ctrl+Shift+C:
+ *   1. confused = 1 is recorded immediately
+ *   2. confusion_type is auto-detected from terminal error
+ *   3. Status bar flashes for 3 seconds — that is it
+ *
+ * confusion_type is mapped automatically from terminal_error_type:
+ *   ValueError       → type_error
+ *   NameError        → name_error
+ *   SyntaxError      → syntax_error
+ *   IndentationError → indentation
+ *   IndexError       → index_error
+ *   KeyError         → key_error
+ *   TypeError        → type_error
+ *   AttributeError   → class_self
+ *   ImportError      → import_error
+ *   RecursionError   → recursion
+ *   ... and so on
  */
 
 import * as vscode from "vscode";
@@ -14,49 +29,66 @@ import { SignalCollector } from "./signals";
 import { SessionLogger }   from "./logger";
 
 // ─────────────────────────────────────────────
-// SAME hardcoded path as logger.ts
+// CHANGE THIS IF YOU MOVE THE PROJECT
 // ─────────────────────────────────────────────
 const PROJECT_DATA_PATH =
   "C:\\Users\\SHRUTI\\Downloads\\diploma projects\\Instuck AI\\data";
 
 // ─────────────────────────────────────────────
-// Confusion type quick pick options C01 - C27
+// Auto-map terminal error type → confusion type
 // ─────────────────────────────────────────────
-const CONFUSION_TYPES = [
-  { label: "C01 — Syntax error",               key: "syntax_error"         },
-  { label: "C02 — NameError (variable)",       key: "name_error"           },
-  { label: "C03 — Indentation error",          key: "indentation"          },
-  { label: "C04 — Do not know what to type",   key: "blank_line"           },
-  { label: "C05 — TypeError",                  key: "type_error"           },
-  { label: "C06 — Loop boundary / off by one", key: "loop_boundary"        },
-  { label: "C07 — Wrong return value",         key: "wrong_return"         },
-  { label: "C08 — Scope confusion",            key: "scope"                },
-  { label: "C09 — List mutation in loop",      key: "list_mutation"        },
-  { label: "C10 — IndexError",                 key: "index_error"          },
-  { label: "C11 — Mutable default argument",   key: "mutable_default"      },
-  { label: "C12 — Reference vs copy",          key: "reference_copy"       },
-  { label: "C13 — KeyError (dictionary)",      key: "key_error"            },
-  { label: "C14 — Recursion confusion",        key: "recursion"            },
-  { label: "C15 — Class / self confusion",     key: "class_self"           },
-  { label: "C16 — Async / await order",        key: "async_await"          },
-  { label: "C17 — Decorator confusion",        key: "decorator"            },
-  { label: "C18 — Generator vs list",          key: "generator"            },
-  { label: "C19 — Import / circular import",   key: "import_error"         },
-  { label: "C20 — Threading / race condition", key: "threading"            },
-  { label: "C21 — Memory leak",                key: "memory_leak"          },
-  { label: "C22 — API response structure",     key: "api_response"         },
-  { label: "C23 — Metaclass / descriptor",     key: "metaclass"            },
-  { label: "C24 — GIL / parallelism",          key: "gil"                  },
-  { label: "C25 — ML not converging",          key: "ml_convergence"       },
-  { label: "C26 — CUDA / device mismatch",     key: "cuda_device"          },
-  { label: "C27 — Train vs serve skew",        key: "train_serve_skew"     },
-  { label: "Other / not sure",                 key: "unknown"              },
-];
+const ERROR_TO_CONFUSION: Record<string, string> = {
+  "SyntaxError":          "syntax_error",
+  "IndentationError":     "indentation",
+  "NameError":            "name_error",
+  "TypeError":            "type_error",
+  "ValueError":           "type_error",
+  "IndexError":           "index_error",
+  "KeyError":             "key_error",
+  "AttributeError":       "class_self",
+  "ImportError":          "import_error",
+  "ModuleNotFoundError":  "import_error",
+  "RecursionError":       "recursion",
+  "ZeroDivisionError":    "type_error",
+  "FileNotFoundError":    "procedure",
+  "OSError":              "procedure",
+  "RuntimeError":         "logic",
+  "StopIteration":        "loop_boundary",
+  "OverflowError":        "type_error",
+  "MemoryError":          "memory_leak",
+  "AssertionError":       "logic",
+  "NotImplementedError":  "wrong_return",
+  "TimeoutError":         "async_await",
+  "PermissionError":      "procedure",
+  "Traceback":            "logic",
+  "TSCannotFindName":     "name_error",
+  "TSTypeAssignment":     "type_error",
+  "TSPropertyMissing":    "class_self",
+  "TSWrongArgCount":      "wrong_return",
+  "ReferenceError":       "name_error",
+  "JSNotDefined":         "name_error",
+  "JSNotAFunction":       "type_error",
+  "JSCannotReadProp":     "reference_copy",
+  "JSUncaught":           "logic",
+};
+
+// ─────────────────────────────────────────────
+// Problems panel error → confusion type
+// ─────────────────────────────────────────────
+const PROBLEMS_TO_CONFUSION: Record<string, string> = {
+  "SyntaxError":       "syntax_error",
+  "IndentationError":  "indentation",
+  "NameError":         "name_error",
+  "TypeError":         "type_error",
+  "TSCannotFindName":  "name_error",
+  "TSTypeAssignment":  "type_error",
+  "TSPropertyMissing": "class_self",
+};
 
 export class LabelManager {
   private labelCount  = 0;
   private lastLabelTs = 0;
-  private MIN_GAP_MS  = 5000;   // 5 second minimum between labels
+  private MIN_GAP_MS  = 5000;   // 5 seconds minimum between labels
 
   constructor(
     private collector: SignalCollector,
@@ -64,48 +96,39 @@ export class LabelManager {
     private context:   vscode.ExtensionContext,
   ) {}
 
-  async handleLabel(): Promise<void> {
+  // ── Main handler — called on Ctrl+Shift+C ──
+
+  handleLabel(): void {
     const now = Date.now();
 
-    // Debounce — prevent accidental double press
+    // Debounce
     if (now - this.lastLabelTs < this.MIN_GAP_MS) {
-      vscode.window.showInformationMessage(
-        "UnstuckAI: Label already recorded — keep coding."
+      vscode.window.setStatusBarMessage(
+        "$(alert) UnstuckAI: Already recorded recently", 2000
       );
       return;
     }
 
-    // Step 1 — mark confused immediately (do not wait for type selection)
     this.lastLabelTs = now;
     this.labelCount++;
+
+    // Step 1 — mark confused in signal buffer immediately
     this.collector.markConfused();
 
-    // Step 2 — show quick pick for confusion type (non-blocking)
-    const selected = await vscode.window.showQuickPick(
-      CONFUSION_TYPES.map(t => t.label),
-      {
-        placeHolder:  `Confusion #${this.labelCount} — what type? (Esc = unknown)`,
-        title:        "UnstuckAI — Select confusion type",
-        matchOnDescription: true,
-      }
-    );
+    // Step 2 — auto-detect confusion type from current errors
+    const confusionType = this.detectConfusionType();
 
-    // Step 3 — resolve the key
-    const confusionKey = selected
-      ? (CONFUSION_TYPES.find(t => t.label === selected)?.key ?? "unknown")
-      : "unknown";
+    // Step 3 — tell logger the type (written in next 5s window)
+    this.logger.setConfusionType(confusionType);
 
-    // Step 4 — tell logger which type was selected
-    this.logger.setConfusionType(confusionKey);
+    // Step 4 — write a dedicated label record to JSONL
+    this.writeLabelRecord(now, confusionType);
 
-    // Step 5 — write a dedicated label record
-    this.writeLabelRecord(now, confusionKey);
-
-    // Step 6 — show feedback
-    this.showFeedback(confusionKey);
+    // Step 5 — silent status bar flash only, no popup
+    this.showSilentFeedback(confusionType);
 
     console.log(
-      `[UnstuckAI] Label #${this.labelCount} — type: ${confusionKey}`
+      `[UnstuckAI] Label #${this.labelCount} — auto type: ${confusionType}`
     );
   }
 
@@ -113,7 +136,60 @@ export class LabelManager {
     return this.labelCount;
   }
 
-  // ── Private ──────────────────────────────
+  // ── Auto-detect confusion type ─────────────
+
+  private detectConfusionType(): string {
+    const editor = vscode.window.activeTextEditor;
+
+    // Priority 1: Terminal error type from logger
+    const terminalType = this.logger.getLastTerminalErrorType();
+    if (terminalType) {
+      const mapped = ERROR_TO_CONFUSION[terminalType];
+      if (mapped) {
+        console.log(`[UnstuckAI] Type from terminal: ${terminalType} → ${mapped}`);
+        return mapped;
+      }
+    }
+
+    // Priority 2: Problems panel diagnostics
+    if (editor) {
+      const diagnostics = vscode.languages.getDiagnostics(editor.document.uri);
+      const errors      = diagnostics.filter(
+        d => d.severity === vscode.DiagnosticSeverity.Error
+      );
+
+      if (errors.length > 0) {
+        const msg       = errors[0].message;
+        const errorType = this.extractErrorType(msg);
+        const mapped    = PROBLEMS_TO_CONFUSION[errorType];
+        if (mapped) {
+          console.log(`[UnstuckAI] Type from Problems: ${errorType} → ${mapped}`);
+          return mapped;
+        }
+      }
+
+      // Priority 3: Infer from file language + no error = procedural confusion
+      const lang = editor.document.languageId;
+      if (["python", "javascript", "typescript"].includes(lang)) {
+        // No error but confused = likely do not know what to type
+        return "blank_line";
+      }
+    }
+
+    // Priority 4: Fallback
+    return "unknown";
+  }
+
+  private extractErrorType(message: string): string {
+    const m = message.match(/^([A-Za-z][A-Za-z0-9_]+(Error|Exception)):/);
+    if (m) { return m[1]; }
+    if (/Cannot find name/.test(message))  { return "TSCannotFindName"; }
+    if (/is not assignable/.test(message)) { return "TSTypeAssignment"; }
+    if (/Property .* does not exist/.test(message)) { return "TSPropertyMissing"; }
+    return "unknown";
+  }
+
+  // ── Write label record ──────────────────────
 
   private writeLabelRecord(timestampMs: number, confusionType: string): void {
     const record = {
@@ -121,9 +197,9 @@ export class LabelManager {
       timestamp:      timestampMs / 1000,
       label_index:    this.labelCount,
       confusion_type: confusionType,
+      auto_detected:  true,
     };
 
-    // Use hardcoded project path
     const dataDir  = this.resolveDataDir();
     const today    = new Date().toISOString().slice(0, 10);
     const filePath = path.join(dataDir, `sessions-${today}.jsonl`);
@@ -132,41 +208,39 @@ export class LabelManager {
       fs.mkdirSync(dataDir, { recursive: true });
       fs.appendFileSync(filePath, JSON.stringify(record) + "\n", "utf8");
     } catch (err) {
-      console.error("[UnstuckAI] Failed to write label record:", err);
+      console.error("[UnstuckAI] Label write failed:", err);
+    }
+  }
+
+  // ── Silent feedback — status bar only ───────
+
+  private showSilentFeedback(confusionType: string): void {
+    const label = confusionType.replace(/_/g, " ");
+    vscode.window.setStatusBarMessage(
+      `$(alert) UnstuckAI: #${this.labelCount} logged [${label}]`,
+      3000
+    );
+
+    // Milestone notifications only — not every press
+    const milestones: Record<number, string> = {
+      10:  "10 labels collected. Keep going.",
+      50:  "50 labels. Model is learning your patterns.",
+      100: "100 labels. Excellent.",
+      250: "250 labels. Halfway to a strong model.",
+      500: "500 labels. Run: python model/train.py to retrain.",
+    };
+    if (milestones[this.labelCount]) {
+      vscode.window.showInformationMessage(
+        `UnstuckAI: ${milestones[this.labelCount]}`
+      );
     }
   }
 
   private resolveDataDir(): string {
     const parentDir = path.dirname(PROJECT_DATA_PATH);
     if (fs.existsSync(parentDir)) { return PROJECT_DATA_PATH; }
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (workspaceFolders?.length) {
-      return path.join(workspaceFolders[0].uri.fsPath, "data");
-    }
+    const ws = vscode.workspace.workspaceFolders;
+    if (ws?.length) { return path.join(ws[0].uri.fsPath, "data"); }
     return path.join(os.homedir(), ".unstuckai", "data");
-  }
-
-  private showFeedback(confusionType: string): void {
-    const typeLabel = CONFUSION_TYPES.find(t => t.key === confusionType)?.label
-                      ?? "unknown";
-
-    vscode.window.setStatusBarMessage(
-      `$(alert) UnstuckAI: #${this.labelCount} logged — ${typeLabel}`,
-      5000
-    );
-
-    const milestones: Record<number, string> = {
-      10:  "10 confusion events. Keep going — target is 500.",
-      50:  "50 events. The model is learning your patterns.",
-      100: "100 events. Excellent progress.",
-      250: "250 events. Halfway to a well-trained model.",
-      500: "500 events. Retrain the model now — python model/train.py",
-    };
-
-    if (milestones[this.labelCount]) {
-      vscode.window.showInformationMessage(
-        `UnstuckAI: ${milestones[this.labelCount]}`
-      );
-    }
   }
 }

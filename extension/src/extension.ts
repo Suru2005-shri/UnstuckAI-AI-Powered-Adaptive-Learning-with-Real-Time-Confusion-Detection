@@ -1,23 +1,8 @@
 /**
  * extension.ts
  * ============
- * Entry point for the UnstuckAI VS Code extension.
- *
- * Phase 1 (current): Data collection only.
- *   - Captures keystroke, error, and cursor events
- *   - Writes to sessions.jsonl every 5 seconds
- *   - Registers Cmd+Shift+C confusion label shortcut
- *
- * Phase 2 (after real data collected): Add scorer.ts, webview.ts, claude.ts
- *   - Runs ONNX model every 5 seconds
- *   - Activates animated character when confusion score > 0.65
- *   - Calls Claude API for adaptive visual explanation
- *
- * To run in development:
- *   1. Open this folder in VS Code
- *   2. Press F5 — opens Extension Development Host window
- *   3. Code normally in the new window
- *   4. Check data/sessions-YYYY-MM-DD.jsonl for captured events
+ * Entry point. Wires SignalCollector → SessionLogger → LabelManager.
+ * Key fix: collector.setLogger(logger) connects terminal error flow.
  */
 
 import * as vscode from "vscode";
@@ -25,68 +10,64 @@ import { SignalCollector } from "./signals";
 import { SessionLogger }   from "./logger";
 import { LabelManager }    from "./labels";
 
-// Keep references alive for the extension lifetime
 let collector: SignalCollector | undefined;
 let logger:    SessionLogger   | undefined;
 let labeler:   LabelManager    | undefined;
 
-// ─────────────────────────────────────────────
-// Activate — called once when VS Code starts
-// ─────────────────────────────────────────────
-
 export function activate(context: vscode.ExtensionContext) {
-  console.log("[UnstuckAI] Extension activating...");
+  console.log("[UnstuckAI] Activating...");
 
-  // 1. Start signal collection
+  // 1. Create signal collector
   collector = new SignalCollector(context);
 
-  // 2. Start JSONL logger (writes every 5 seconds)
+  // 2. Create logger
   logger = new SessionLogger(collector, context);
 
-  // 3. Register confusion label shortcut
+  // 3. CRITICAL: connect logger to collector so terminal errors flow through
+  collector.setLogger(logger);
+
+  // 4. Create label manager
   labeler = new LabelManager(collector, logger, context);
 
+  // 5. Register Ctrl+Shift+C command — silent, no popup
   const labelCommand = vscode.commands.registerCommand(
     "unstuckai.label",
     () => labeler!.handleLabel()
   );
 
-  // 4. Status bar item showing collection is active
-  const statusBar = vscode.window.createStatusBarItem(
-    vscode.StatusBarAlignment.Right, 100
-  );
-  statusBar.text     = "$(record) UnstuckAI";
-  statusBar.tooltip  = "UnstuckAI is collecting data. Press Ctrl+Shift+C when confused.";
-  statusBar.command  = "unstuckai.label";
-  statusBar.show();
-
-  // 5. Show welcome message on first install
-  const isFirstRun = context.globalState.get("unstuckai.firstRun", true);
-  if (isFirstRun) {
-    vscode.window.showInformationMessage(
-      "UnstuckAI is now collecting your coding behaviour. " +
-      "Press Ctrl+Shift+C (or Cmd+Shift+C on Mac) whenever you feel confused. " +
-      "The more you label, the better the model gets.",
-      "Got it"
-    );
-    context.globalState.update("unstuckai.firstRun", false);
-  }
-
-  // 6. Register stats command (shows how much data collected)
+  // 6. Register stats command
   const statsCommand = vscode.commands.registerCommand(
     "unstuckai.stats",
     () => {
       const stats = logger!.getStats();
       vscode.window.showInformationMessage(
-        `UnstuckAI Stats — ` +
-        `Records written: ${stats.records} | ` +
-        `Confusion labels: ${labeler!.getCount()} | ` +
+        `UnstuckAI — Records: ${stats.records} | ` +
+        `Labels: ${labeler!.getCount()} | ` +
+        `Terminal errors: ${(logger as any).terminalErrorCount ?? 0} | ` +
         `File: ${stats.file}`
       );
     }
   );
 
-  // Push all disposables so VS Code cleans them up on deactivate
+  // 7. Status bar indicator
+  const statusBar = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Right, 100
+  );
+  statusBar.text    = "$(record) UnstuckAI";
+  statusBar.tooltip = "UnstuckAI collecting data. Ctrl+Shift+C = confused";
+  statusBar.command = "unstuckai.stats";
+  statusBar.show();
+
+  // 8. First run message
+  const isFirstRun = context.globalState.get("unstuckai.firstRun", true);
+  if (isFirstRun) {
+    vscode.window.showInformationMessage(
+      "UnstuckAI is running. Press Ctrl+Shift+C when you feel confused. " +
+      "Confusion type is detected automatically from your errors."
+    );
+    context.globalState.update("unstuckai.firstRun", false);
+  }
+
   context.subscriptions.push(
     labelCommand,
     statsCommand,
@@ -94,15 +75,10 @@ export function activate(context: vscode.ExtensionContext) {
     { dispose: () => collector?.dispose() },
   );
 
-  console.log("[UnstuckAI] Extension active. Collecting data...");
+  console.log("[UnstuckAI] Active. Terminal errors will auto-detect confusion type.");
 }
 
-// ─────────────────────────────────────────────
-// Deactivate — called when VS Code closes
-// ─────────────────────────────────────────────
-
 export function deactivate() {
-  // Flush final records before shutdown
   logger?.stop();
-  console.log("[UnstuckAI] Extension deactivated. Data saved.");
+  console.log("[UnstuckAI] Deactivated.");
 }
